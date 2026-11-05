@@ -1,0 +1,97 @@
+name: Windows Build
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '**.cpp'
+      - '**.h'
+      - '**.txt'
+      - '**.iss'
+      - '.github/workflows/windows-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Setup CMake
+        uses: lukka/get-cmake@latest
+
+      - name: Configure
+        run: cmake -S . -B build -A x64 -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build VST3 and Standalone
+        run: cmake --build build --config Release --parallel
+
+      - name: Verify build outputs
+        shell: pwsh
+        run: |
+          $vst = "build/YMYDelay_artefacts/Release/VST3/YMY DELAY.vst3"
+          $app = "build/YMYDelay_artefacts/Release/Standalone/YMY DELAY.exe"
+          if (!(Test-Path $vst)) { throw "VST3 bundle not found: $vst" }
+          if (!(Test-Path $app)) { throw "Standalone executable not found: $app" }
+          Get-ChildItem $vst -Recurse | Select-Object FullName, Length
+          Get-Item $app | Select-Object FullName, Length
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build Windows installer
+        shell: pwsh
+        run: |
+          $iscc = Get-ChildItem "C:/Program Files (x86)/Inno Setup 6/ISCC.exe" -ErrorAction SilentlyContinue
+          if (!$iscc) { $iscc = Get-ChildItem "C:/Program Files/Inno Setup 6/ISCC.exe" -ErrorAction SilentlyContinue }
+          if (!$iscc) { throw "Inno Setup compiler not found" }
+          & $iscc.FullName "Installer/YMY-DELAY.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
+          if (!(Test-Path "dist/YMY DELAY Setup.exe")) { throw "Setup.exe was not generated" }
+
+      - name: Assemble ZIP package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path package | Out-Null
+          Copy-Item "build/YMYDelay_artefacts/Release/VST3/YMY DELAY.vst3" package -Recurse
+          Copy-Item "build/YMYDelay_artefacts/Release/Standalone/YMY DELAY.exe" package
+          Copy-Item "dist/YMY DELAY Setup.exe" package
+          Copy-Item README.md package
+          Compress-Archive -Path "package/*" -DestinationPath "dist/YMY DELAY.zip" -Force
+          Get-ChildItem dist | Select-Object Name, Length
+
+      - name: Upload complete ZIP package
+        uses: actions/upload-artifact@v4
+        with:
+          name: YMY-DELAY-Package
+          path: dist/YMY DELAY.zip
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: YMY-DELAY-Setup
+          path: dist/YMY DELAY Setup.exe
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Upload plugin and standalone
+        uses: actions/upload-artifact@v4
+        with:
+          name: YMY-DELAY-VST3-Standalone
+          path: |
+            build/YMYDelay_artefacts/Release/VST3/YMY DELAY.vst3
+            build/YMYDelay_artefacts/Release/Standalone/YMY DELAY.exe
+          if-no-files-found: error
+          compression-level: 0
